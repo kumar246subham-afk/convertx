@@ -1,0 +1,48 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    color-scheme: dark;
+  }
+}
+
+/* Custom dark scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0B0B0F;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #282B37;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3E4354;
+}
+
+/* Glassmorphism and UI accents for dark mode */
+.glass-nav {
+  backdrop-filter: blur(14px);
+  background-color: rgba(11, 11, 15, 0.88);
+}
+
+.gradient-hero {
+  background: radial-gradient(circle at 50% 0%, rgba(124, 58, 237, 0.22) 0%, rgba(11, 11, 15, 0) 70%);
+}
+
+.card-hover {
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 28px -10px rgba(124, 58, 237, 0.3);
+}
