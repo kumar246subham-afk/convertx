@@ -352,6 +352,75 @@ describe('ConvertX Backend API Test Suite', () => {
       assert.strictEqual(res.body.success, true);
       assert.strictEqual(res.body.data.pageCount, 1);
     });
+
+    it('Linux Pure-Node Word-to-PDF fallback (convertWithMammothPdfLib) converts DOCX with Unicode 0xF0AE and tables to a valid PDF', async () => {
+      const fs = require('fs');
+      const path = require('path');
+      const { convertWithMammothPdfLib } = require('../src/services/convertService');
+      const { extractText } = require('../src/services/pdfService');
+      const { safeDelete } = require('../src/utils/helpers');
+
+      const fixturePath = path.resolve(__dirname, 'fixtures/test-sample.docx');
+      const outPath = path.resolve(__dirname, 'fixtures/temp-linux-fallback-word.pdf');
+      let extractedPath = null;
+
+      try {
+        await convertWithMammothPdfLib(
+          { path: fixturePath, originalname: 'test-sample.docx' },
+          outPath
+        );
+        assert.ok(fs.existsSync(outPath), 'Fallback PDF file was created');
+        const pdfBytes = fs.readFileSync(outPath);
+        const doc = await PDFDocument.load(pdfBytes);
+        assert.ok(doc.getPageCount() >= 1, 'Fallback PDF has at least 1 page');
+        const extracted = await extractText({ path: outPath, originalname: 'test-sample.pdf' });
+        extractedPath = extracted.outputPath;
+        assert.ok(extracted.text.includes('ConvertX'), 'Fallback PDF contains extracted document text');
+      } finally {
+        safeDelete(outPath);
+        if (extractedPath) safeDelete(extractedPath);
+      }
+    });
+
+    it('Linux Pure-Node PowerPoint-to-PDF fallback (convertWithPptxPdfLib) converts PPTX slides with Unicode to a valid widescreen PDF', async () => {
+      const fs = require('fs');
+      const path = require('path');
+      const JSZip = require('jszip');
+      const { convertWithPptxPdfLib } = require('../src/services/convertService');
+      const { extractText } = require('../src/services/pdfService');
+      const { safeDelete } = require('../src/utils/helpers');
+
+      const pptxPath = path.resolve(__dirname, 'fixtures/temp-sample.pptx');
+      const outPath = path.resolve(__dirname, 'fixtures/temp-linux-fallback-ppt.pdf');
+      let extractedPath = null;
+
+      try {
+        const zip = new JSZip();
+        zip.file(
+          'ppt/slides/slide1.xml',
+          '<p:sld><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>ConvertX Architecture Overview</a:t></a:r></a:p><a:p><a:r><a:t>\uF0AE Multi-tier conversion engine &amp; cloud readiness</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>'
+        );
+        zip.file(
+          'ppt/slides/slide2.xml',
+          '<p:sld><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Slide Two Summary</a:t></a:r></a:p><a:p><a:r><a:t>Tab\tsupport and smart “quotes” on Linux</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>'
+        );
+        const pptxBuf = await zip.generateAsync({ type: 'nodebuffer' });
+        fs.writeFileSync(pptxPath, pptxBuf);
+
+        await convertWithPptxPdfLib({ path: pptxPath, originalname: 'sample.pptx' }, outPath);
+        assert.ok(fs.existsSync(outPath), 'PPTX fallback PDF was created');
+        const pdfBytes = fs.readFileSync(outPath);
+        const doc = await PDFDocument.load(pdfBytes);
+        assert.strictEqual(doc.getPageCount(), 2, 'Generated 2-page PDF for 2 slides');
+        const extracted = await extractText({ path: outPath, originalname: 'sample.pdf' });
+        extractedPath = extracted.outputPath;
+        assert.ok(extracted.text.includes('ConvertX Architecture Overview'));
+      } finally {
+        safeDelete(pptxPath);
+        safeDelete(outPath);
+        if (extractedPath) safeDelete(extractedPath);
+      }
+    });
   });
 
   describe('Upload Validation & File Downloads', () => {

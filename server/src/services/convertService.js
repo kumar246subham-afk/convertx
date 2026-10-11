@@ -40,24 +40,40 @@ function detectMsWord() {
 }
 
 /**
- * Locate LibreOffice executable if installed
+ * Locate LibreOffice executable if installed (Linux, macOS, Windows)
  */
 function findLibreOfficePath() {
   const commonPaths = [
-    'soffice',
-    'libreoffice',
+    '/usr/bin/libreoffice',
+    '/usr/bin/soffice',
+    '/usr/local/bin/libreoffice',
+    '/usr/local/bin/soffice',
+    '/snap/bin/libreoffice',
+    '/Applications/LibreOffice.app/Contents/MacOS/soffice',
     'C:\\Program Files\\LibreOffice\\program\\soffice.exe',
     'C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe',
   ];
 
   for (const p of commonPaths) {
-    if (p === 'soffice' || p === 'libreoffice') {
-      continue;
-    }
     if (fs.existsSync(p)) {
       return p;
     }
   }
+
+  if (process.platform !== 'win32') {
+    try {
+      const { execSync } = require('child_process');
+      const found = execSync('command -v libreoffice || command -v soffice', {
+        timeout: 3000,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      if (found) return found;
+    } catch {
+      // LibreOffice not in PATH
+    }
+  }
+
   return null;
 }
 
@@ -315,7 +331,7 @@ async function excelToPdf(file) {
     });
   }
 
-  const pdfBytes = await pdfDoc.save();
+  const pdfBytes = await pdfDoc.save({ useObjectStreams: false });
   const outputPath = path.join(env.PROCESSED_DIR, `excel-to-pdf-${uuidv4()}.pdf`);
   fs.writeFileSync(outputPath, pdfBytes);
 
@@ -383,8 +399,18 @@ function convertWithLibreOffice(inputPath, outputDir) {
     const sofficeBin = cachedLibreOfficePath || 'soffice';
     execFile(
       sofficeBin,
-      ['--headless', '--convert-to', 'pdf', '--outdir', outputDir, inputPath],
-      { timeout: 30000 },
+      [
+        '--headless',
+        '--nologo',
+        '--nofirststartwizard',
+        '--norestore',
+        '--convert-to',
+        'pdf',
+        '--outdir',
+        outputDir,
+        inputPath,
+      ],
+      { timeout: 60000 },
       (error, stdout, stderr) => {
         if (error) {
           return reject(
@@ -514,7 +540,7 @@ async function convertWithMammothPdfLib(file, outputPath) {
     }
   }
 
-  const pdfBytes = await pdfDoc.save();
+  const pdfBytes = await pdfDoc.save({ useObjectStreams: false });
   fs.writeFileSync(outputPath, pdfBytes);
 }
 
@@ -689,12 +715,159 @@ finally {
     }
   }
 
-  // If neither LibreOffice nor PowerPoint is installed, provide clean 400 error
+  // Pure-Node fallback for .pptx on Linux / environments without LibreOffice or MS PowerPoint
+  const ext = path.extname(file.originalname || file.path).toLowerCase();
+  if (ext === '.pptx') {
+    try {
+      await convertWithPptxPdfLib(file, outputPath);
+      if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
+        return {
+          outputPath,
+          filename: `${baseName}.pdf`,
+          size: fs.statSync(outputPath).size,
+        };
+      }
+    } catch (e) {
+      console.warn('Pure-Node PPTX fallback failed:', e.message);
+    }
+  }
+
+  // If legacy .ppt and neither LibreOffice nor PowerPoint is installed, provide clean 400 error
   const err = new Error(
-    'PowerPoint conversion requires LibreOffice or Microsoft PowerPoint to be installed on the server.'
+    'Legacy .ppt conversion requires LibreOffice or Microsoft PowerPoint on the server. Please upload a .pptx file or use the Docker image with LibreOffice.'
   );
   err.status = 400;
   throw err;
+}
+
+/**
+ * Pure-Node PPTX-to-PDF slide renderer using JSZip + pdf-lib (works on Linux without LibreOffice)
+ */
+async function convertWithPptxPdfLib(file, outputPath) {
+  const JSZip = require('jszip');
+  const fileBytes = fs.readFileSync(file.path);
+  const zip = await JSZip.loadAsync(fileBytes);
+
+  const slideFiles = Object.keys(zip.files)
+    .filter((name) => /^ppt\/slides\/slide\d+\.xml$/i.test(name))
+    .sort((a, b) => {
+      const numA = parseInt(a.match(/slide(\d+)\.xml/i)[1], 10);
+      const numB = parseInt(b.match(/slide(\d+)\.xml/i)[1], 10);
+      return numA - numB;
+    });
+
+  if (slideFiles.length === 0) {
+    throw new Error('No slides found in the uploaded PowerPoint presentation.');
+  }
+
+  const pdfDoc = await PDFDocument.create();
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+  // Widescreen 16:9 slide dimensions in points
+  const pageWidth = 841.89;
+  const pageHeight = 473.56;
+  const margin = 48;
+  const maxWidth = pageWidth - margin * 2;
+
+  const decodeXmlEntities = (str) =>
+    str
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'");
+
+  for (let i = 0; i < slideFiles.length; i++) {
+    const xml = await zip.files[slideFiles[i]].async('string');
+    const paragraphs = [];
+    const pMatches = xml.match(/<a:p\b[^>]*>[\s\S]*?<\/a:p>/g) || [];
+    for (const pXml of pMatches) {
+      const tMatches = pXml.match(/<a:t\b[^>]*>([\s\S]*?)<\/a:t>/g) || [];
+      const text = tMatches
+        .map((t) => decodeXmlEntities(t.replace(/<\/?a:t\b[^>]*>/g, '')))
+        .join('');
+      const clean = sanitizeForWinAnsi(text).trim();
+      if (clean) paragraphs.push(clean);
+    }
+
+    const page = pdfDoc.addPage([pageWidth, pageHeight]);
+
+    // Slide top accent bar
+    page.drawRectangle({
+      x: 0,
+      y: pageHeight - 8,
+      width: pageWidth,
+      height: 8,
+      color: rgb(0.48, 0.23, 0.93),
+    });
+
+    // Slide number badge
+    const badgeText = `Slide ${i + 1} of ${slideFiles.length}`;
+    page.drawText(badgeText, {
+      x: pageWidth - margin - font.widthOfTextAtSize(badgeText, 10),
+      y: pageHeight - 32,
+      size: 10,
+      font,
+      color: rgb(0.45, 0.45, 0.55),
+    });
+
+    let currentY = pageHeight - 64;
+
+    if (paragraphs.length === 0) {
+      page.drawText('(Visual slide — no text elements)', {
+        x: margin,
+        y: pageHeight / 2,
+        size: 12,
+        font,
+        color: rgb(0.5, 0.5, 0.5),
+      });
+      continue;
+    }
+
+    paragraphs.forEach((para, idx) => {
+      const isTitle = idx === 0;
+      const activeFont = isTitle ? fontBold : font;
+      const fontSize = isTitle ? 22 : 13;
+      const lineHeight = isTitle ? 30 : 20;
+      const prefix = isTitle ? '' : '-  ';
+      const words = `${prefix}${para}`.split(' ');
+      let currentLine = '';
+
+      for (const word of words) {
+        const candidate = currentLine ? `${currentLine} ${word}` : word;
+        if (activeFont.widthOfTextAtSize(candidate, fontSize) <= maxWidth) {
+          currentLine = candidate;
+        } else {
+          if (currentY > margin) {
+            page.drawText(currentLine, {
+              x: margin,
+              y: currentY,
+              size: fontSize,
+              font: activeFont,
+              color: isTitle ? rgb(0.12, 0.12, 0.2) : rgb(0.22, 0.22, 0.28),
+            });
+            currentY -= lineHeight;
+          }
+          currentLine = word;
+        }
+      }
+
+      if (currentLine && currentY > margin) {
+        page.drawText(currentLine, {
+          x: margin,
+          y: currentY,
+          size: fontSize,
+          font: activeFont,
+          color: isTitle ? rgb(0.12, 0.12, 0.2) : rgb(0.22, 0.22, 0.28),
+        });
+        currentY -= isTitle ? lineHeight + 10 : lineHeight + 4;
+      }
+    });
+  }
+
+  const pdfBytes = await pdfDoc.save({ useObjectStreams: false });
+  fs.writeFileSync(outputPath, pdfBytes);
 }
 
 /**
@@ -718,5 +891,7 @@ module.exports = {
   excelToPdf,
   wordToPdf,
   powerpointToPdf,
+  convertWithMammothPdfLib,
+  convertWithPptxPdfLib,
   getSystemStatus,
 };
