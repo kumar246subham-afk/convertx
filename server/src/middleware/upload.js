@@ -48,7 +48,9 @@ const upload = multer({
     if (allowedExtensions.includes(ext)) {
       cb(null, true);
     } else {
-      cb(new Error(`Unsupported file type "${ext}". Supported types: ${allowedExtensions.join(', ')}`));
+      const err = new Error(`Unsupported file type "${ext}". Supported types: ${allowedExtensions.join(', ')}`);
+      err.status = 400;
+      cb(err);
     }
   },
 });

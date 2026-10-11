@@ -168,12 +168,104 @@ describe('ConvertX Backend API Test Suite', () => {
       assert.strictEqual(res.body.success, true);
       assert.ok(res.body.data.downloadId);
     });
+
+    it('POST /api/v1/pdf/organize reorders and deletes pages using comma-separated strings', async () => {
+      const res = await request(app)
+        .post('/api/v1/pdf/organize')
+        .attach('file', sampleMultiPagePdfBuffer, 'organize.pdf')
+        .field('pageOrder', JSON.stringify('3,2,1'))
+        .field('deletedPages', JSON.stringify('2'));
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.success, true);
+      assert.strictEqual(res.body.data.pageCount, 2);
+    });
+
+    it('POST /api/v1/pdf/extract-pages extracts selected pages into a valid PDF', async () => {
+      const res = await request(app)
+        .post('/api/v1/pdf/extract-pages')
+        .attach('file', sampleMultiPagePdfBuffer, 'extract.pdf')
+        .field('pages', '1, 3');
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.success, true);
+      assert.strictEqual(res.body.data.pageCount, 2);
+    });
+
+    it('POST /api/v1/pdf/page-numbers adds formatted page numbers to all pages', async () => {
+      const res = await request(app)
+        .post('/api/v1/pdf/page-numbers')
+        .attach('file', sampleMultiPagePdfBuffer, 'numbers.pdf')
+        .field('position', 'bottom-center')
+        .field('fontSize', '10')
+        .field('startNumber', '1')
+        .field('format', 'Page {n} of {total}');
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.success, true);
+      assert.strictEqual(res.body.data.pageCount, 3);
+    });
+
+    it('POST /api/v1/pdf/unlock decrypts a password-protected PDF', async () => {
+      const resProtect = await request(app)
+        .post('/api/v1/pdf/protect')
+        .attach('file', samplePdfBuffer, 'lock-me.pdf')
+        .field('password', 'unitTestPass99');
+      assert.strictEqual(resProtect.status, 200);
+
+      const dlProtect = await request(app)
+        .get(`/api/v1/files/${resProtect.body.data.downloadId}/download`)
+        .buffer(true)
+        .parse((res, cb) => {
+          const chunks = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => cb(null, Buffer.concat(chunks)));
+        });
+
+      const resUnlock = await request(app)
+        .post('/api/v1/pdf/unlock')
+        .attach('file', dlProtect.body, 'protected.pdf')
+        .field('password', 'unitTestPass99');
+
+      assert.strictEqual(resUnlock.status, 200);
+      assert.strictEqual(resUnlock.body.success, true);
+      assert.ok(resUnlock.body.data.downloadId);
+    });
+
+    it('POST /api/v1/pdf/metadata/get and /update reads and updates PDF metadata', async () => {
+      const resUpdate = await request(app)
+        .post('/api/v1/pdf/metadata/update')
+        .attach('file', samplePdfBuffer, 'meta.pdf')
+        .field('title', 'ConvertX Audit Title')
+        .field('author', 'ConvertX QA');
+
+      assert.strictEqual(resUpdate.status, 200);
+      assert.strictEqual(resUpdate.body.success, true);
+
+      const dlMeta = await request(app)
+        .get(`/api/v1/files/${resUpdate.body.data.downloadId}/download`)
+        .buffer(true)
+        .parse((res, cb) => {
+          const chunks = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => cb(null, Buffer.concat(chunks)));
+        });
+
+      const resGet = await request(app)
+        .post('/api/v1/pdf/metadata/get')
+        .attach('file', dlMeta.body, 'updated-meta.pdf');
+
+      assert.strictEqual(resGet.status, 200);
+      assert.strictEqual(resGet.body.data.title, 'ConvertX Audit Title');
+      assert.strictEqual(resGet.body.data.author, 'ConvertX QA');
+    });
   });
 
   describe('Document Conversions', () => {
-    it('POST /api/v1/convert/word-to-pdf converts DOCX with unicode and tables successfully', async () => {
+    it('POST /api/v1/convert/word-to-pdf converts DOCX with unicode and tables and produces valid downloadable PDF', async () => {
       const fs = require('fs');
       const path = require('path');
+      const pdfParse = require('pdf-parse');
       const fixturePath = path.resolve(__dirname, 'fixtures/test-sample.docx');
       assert.ok(fs.existsSync(fixturePath), 'test fixture exists');
       const buffer = fs.readFileSync(fixturePath);
@@ -188,6 +280,21 @@ describe('ConvertX Backend API Test Suite', () => {
       assert.ok(res.body.data.size > 0);
       assert.ok(res.body.data.pageCount >= 1);
       assert.match(res.body.data.filename, /\.pdf$/i);
+
+      // Download and verify the generated PDF opens and contains expected document text
+      const dlRes = await request(app)
+        .get(`/api/v1/files/${res.body.data.downloadId}/download`)
+        .buffer(true)
+        .parse((r, cb) => {
+          const chunks = [];
+          r.on('data', (c) => chunks.push(c));
+          r.on('end', () => cb(null, Buffer.concat(chunks)));
+        });
+      assert.strictEqual(dlRes.status, 200);
+      const loadedPdf = await PDFDocument.load(dlRes.body);
+      assert.ok(loadedPdf.getPageCount() >= 1);
+      const parsedText = await pdfParse(dlRes.body);
+      assert.ok(parsedText.text.length > 0, 'Generated PDF contains extracted text');
     });
 
     it('POST /api/v1/convert/word-to-pdf rejects request without file', async () => {
@@ -195,11 +302,70 @@ describe('ConvertX Backend API Test Suite', () => {
       assert.strictEqual(res.status, 400);
       assert.strictEqual(res.body.success, false);
     });
+
+    it('POST /api/v1/convert/images-to-pdf converts PNG image to valid PDF', async () => {
+      const sharp = require('sharp');
+      const pngBuffer = await sharp({
+        create: { width: 120, height: 80, channels: 3, background: { r: 124, g: 58, b: 237 } },
+      })
+        .png()
+        .toBuffer();
+
+      const res = await request(app)
+        .post('/api/v1/convert/images-to-pdf')
+        .attach('files', pngBuffer, 'sample.png')
+        .field('margin', '20');
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.success, true);
+      assert.strictEqual(res.body.data.pageCount, 1);
+    });
+
+    it('POST /api/v1/convert/pdf-to-images renders PDF page to PNG image', async () => {
+      const res = await request(app)
+        .post('/api/v1/convert/pdf-to-images')
+        .attach('file', samplePdfBuffer, 'render.pdf')
+        .field('format', 'png')
+        .field('dpi', '72');
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.success, true);
+      assert.ok(res.body.data.downloadId);
+      assert.match(res.body.data.filename, /\.png$/i);
+    });
+
+    it('POST /api/v1/convert/excel-to-pdf converts XLSX with unicode characters to valid PDF', async () => {
+      const xlsx = require('xlsx');
+      const wb = xlsx.utils.book_new();
+      const ws = xlsx.utils.aoa_to_sheet([
+        ['Item', 'Price (₹)', 'Notes'],
+        ['ConvertX Pro \uF0AE', '₹999', 'Tab\ttest & smart “quotes”'],
+      ]);
+      xlsx.utils.book_append_sheet(wb, ws, 'Pricing ₹');
+      const xlsxBuffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+      const res = await request(app)
+        .post('/api/v1/convert/excel-to-pdf')
+        .attach('file', xlsxBuffer, 'pricing.xlsx');
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.success, true);
+      assert.strictEqual(res.body.data.pageCount, 1);
+    });
   });
 
-  describe('File Downloads & Lifecycle', () => {
+  describe('Upload Validation & File Downloads', () => {
+    it('Rejects unsupported file extension with 400 Bad Request', async () => {
+      const res = await request(app)
+        .post('/api/v1/pdf/rotate')
+        .attach('file', Buffer.from('fake-executable'), 'malware.exe');
+
+      assert.strictEqual(res.status, 400);
+      assert.strictEqual(res.body.success, false);
+      assert.match(res.body.error, /Unsupported file type/i);
+    });
+
     it('GET /api/v1/files/:id/download successfully streams created file', async () => {
-      // First create a file
       const resCreate = await request(app)
         .post('/api/v1/pdf/rotate')
         .attach('file', samplePdfBuffer, 'stream.pdf')
@@ -217,6 +383,75 @@ describe('ConvertX Backend API Test Suite', () => {
       assert.strictEqual(res.status, 404);
       assert.strictEqual(res.body.success, false);
       assert.strictEqual(res.body.code, 'FILE_EXPIRED_OR_NOT_FOUND');
+    });
+  });
+
+  describe('Authentication & Conversion History', () => {
+    it('Registers a test user, logs in, verifies /auth/me, and records conversion history in /auth/history', async () => {
+      const { connectDB, getDBStatus } = require('../src/config/db');
+      const User = require('../src/models/User');
+      const JobHistory = require('../src/models/JobHistory');
+
+      await connectDB();
+      if (!getDBStatus().connected) {
+        return; // Skip DB-dependent auth lifecycle only if MongoDB is not running
+      }
+
+      const testEmail = `qa-audit-${Date.now()}@convertx.local`;
+      const testPassword = 'SafeAuditPassword123!';
+
+      try {
+        // 1. Register
+        const regRes = await request(app)
+          .post('/api/v1/auth/register')
+          .send({ name: 'QA Auditor', email: testEmail, password: testPassword });
+        assert.strictEqual(regRes.status, 201);
+        assert.strictEqual(regRes.body.success, true);
+        assert.ok(regRes.body.data.token);
+
+        // 2. Login
+        const loginRes = await request(app)
+          .post('/api/v1/auth/login')
+          .send({ email: testEmail, password: testPassword });
+        assert.strictEqual(loginRes.status, 200);
+        assert.strictEqual(loginRes.body.success, true);
+        const token = loginRes.body.data.token;
+
+        // 3. Get profile (/auth/me)
+        const meRes = await request(app)
+          .get('/api/v1/auth/me')
+          .set('Authorization', `Bearer ${token}`);
+        assert.strictEqual(meRes.status, 200);
+        assert.strictEqual(meRes.body.data.email, testEmail);
+
+        // 4. Perform an authenticated PDF operation
+        const opRes = await request(app)
+          .post('/api/v1/pdf/compress')
+          .set('Authorization', `Bearer ${token}`)
+          .attach('file', samplePdfBuffer, 'history-check.pdf');
+        assert.strictEqual(opRes.status, 200);
+
+        // Wait briefly for async JobHistory write
+        await new Promise((r) => setTimeout(r, 150));
+
+        // 5. Verify conversion history (/auth/history)
+        const histRes = await request(app)
+          .get('/api/v1/auth/history')
+          .set('Authorization', `Bearer ${token}`);
+        assert.strictEqual(histRes.status, 200);
+        assert.ok(Array.isArray(histRes.body.data));
+        assert.ok(histRes.body.data.some((h) => h.originalFilename === 'history-check.pdf'));
+      } finally {
+        const mongoose = require('mongoose');
+        const user = await User.findOne({ email: testEmail });
+        if (user) {
+          await JobHistory.deleteMany({ userId: user._id });
+          await User.deleteOne({ _id: user._id });
+        }
+        if (mongoose.connection.readyState !== 0) {
+          await mongoose.disconnect();
+        }
+      }
     });
   });
 });

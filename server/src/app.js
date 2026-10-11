@@ -10,6 +10,9 @@ const convertRoutes = require('./routes/convertRoutes');
 const fileRoutes = require('./routes/fileRoutes');
 const systemRoutes = require('./routes/systemRoutes');
 const authRoutes = require('./routes/authRoutes');
+const { optionalAuth } = require('./middleware/auth');
+const { getDBStatus } = require('./config/db');
+const JobHistory = require('./models/JobHistory');
 
 const app = express();
 
@@ -70,10 +73,45 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Apply rate limiter to /api
 app.use('/api', apiLimiter);
 
+// Record conversion history for authenticated users when MongoDB is connected
+function trackJobHistory(req, res, next) {
+  const originalJson = res.json.bind(res);
+  res.json = function (payload) {
+    if (
+      req.user?.id &&
+      getDBStatus().connected &&
+      res.statusCode === 200 &&
+      payload?.success &&
+      payload?.data?.downloadId
+    ) {
+      const toolName = req.originalUrl.replace(/^\/api\/v1\//, '').split('?')[0];
+      const origName =
+        req.file?.originalname ||
+        (Array.isArray(req.files) && req.files.map((f) => f.originalname).join(', ')) ||
+        payload.data.filename ||
+        'document';
+      const origSize =
+        req.file?.size ||
+        (Array.isArray(req.files) ? req.files.reduce((s, f) => s + (f.size || 0), 0) : undefined);
+
+      JobHistory.create({
+        userId: req.user.id,
+        tool: toolName,
+        originalFilename: origName,
+        fileSize: origSize,
+        processedSize: payload.data.size,
+        status: 'completed',
+      }).catch(() => {});
+    }
+    return originalJson(payload);
+  };
+  next();
+}
+
 // API v1 Routes
 app.use('/api/v1', systemRoutes);
-app.use('/api/v1/pdf', pdfRoutes);
-app.use('/api/v1/convert', convertRoutes);
+app.use('/api/v1/pdf', optionalAuth, trackJobHistory, pdfRoutes);
+app.use('/api/v1/convert', optionalAuth, trackJobHistory, convertRoutes);
 app.use('/api/v1/files', fileRoutes);
 app.use('/api/v1/auth', authRoutes);
 

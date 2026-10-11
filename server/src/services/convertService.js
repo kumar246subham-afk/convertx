@@ -137,6 +137,10 @@ async function pdfToImages(file, options = {}) {
   const isJpeg = format.toLowerCase() === 'jpeg' || format.toLowerCase() === 'jpg';
 
   const fileBytes = fs.readFileSync(file.path);
+  // Clear any legacy pdfjsWorker set by pdfjs-dist v3 so pdf-to-png-converter (v6) uses its own worker
+  if (globalThis.pdfjsWorker) {
+    delete globalThis.pdfjsWorker;
+  }
   const pages = await pdfToPng(fileBytes, {
     viewportScale: Math.max(1, (parseInt(dpi, 10) || 150) / 72),
   });
@@ -238,7 +242,7 @@ async function excelToPdf(file) {
     let currentY = pageHeight - margin;
 
     // Draw Sheet Title
-    currentPage.drawText(`Sheet: ${sheetName}`, {
+    currentPage.drawText(`Sheet: ${sanitizeForWinAnsi(sheetName)}`, {
       x: margin,
       y: currentY - 14,
       size: 14,
@@ -279,7 +283,7 @@ async function excelToPdf(file) {
 
       // Draw cells
       for (let c = 0; c < columnCount; c++) {
-        const rawVal = row[c] !== undefined ? String(row[c]) : '';
+        const rawVal = sanitizeForWinAnsi(row[c] !== undefined ? String(row[c]) : '');
         // Truncate cell text if exceeding column width
         const maxChars = Math.floor(colWidth / 6);
         const cellText = rawVal.length > maxChars ? `${rawVal.slice(0, maxChars - 2)}..` : rawVal;
@@ -619,6 +623,9 @@ async function wordToPdf(file) {
  * Convert PowerPoint (PPTX) presentation to PDF
  */
 async function powerpointToPdf(file) {
+  const baseName = path.basename(file.originalname || 'presentation', path.extname(file.originalname || ''));
+  const outputPath = path.join(env.PROCESSED_DIR, `ppt-to-pdf-${uuidv4()}.pdf`);
+
   if (cachedLibreOfficePath) {
     try {
       const outDir = env.PROCESSED_DIR;
@@ -626,10 +633,11 @@ async function powerpointToPdf(file) {
       const generatedPdfName = `${path.basename(file.path, path.extname(file.path))}.pdf`;
       const generatedPdfPath = path.join(outDir, generatedPdfName);
       if (fs.existsSync(generatedPdfPath)) {
+        fs.renameSync(generatedPdfPath, outputPath);
         return {
-          outputPath: generatedPdfPath,
-          filename: `${path.basename(file.originalname, path.extname(file.originalname))}.pdf`,
-          size: fs.statSync(generatedPdfPath).size,
+          outputPath,
+          filename: `${baseName}.pdf`,
+          size: fs.statSync(outputPath).size,
         };
       }
     } catch (e) {
@@ -637,10 +645,56 @@ async function powerpointToPdf(file) {
     }
   }
 
-  // If LibreOffice is not installed, provide clean, actionable requirement details
-  throw new Error(
-    'PowerPoint conversion requires LibreOffice to be installed on the host machine. Please install LibreOffice or set up the LibreOffice path in server configuration.'
+  // On Windows, try Microsoft PowerPoint COM automation (32 = ppSaveAsPDF)
+  if (process.platform === 'win32') {
+    try {
+      await new Promise((resolve, reject) => {
+        const psScript = `
+$ErrorActionPreference = 'Stop'
+$ppt = $null
+$pres = $null
+try {
+  $ppt = New-Object -ComObject PowerPoint.Application
+  $pres = $ppt.Presentations.Open('${file.path.replace(/'/g, "''")}', $true, $false, $false)
+  $pres.SaveAs('${outputPath.replace(/'/g, "''")}', 32)
+}
+finally {
+  if ($pres -ne $null) {
+    $pres.Close()
+    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pres) | Out-Null
+  }
+  if ($ppt -ne $null) {
+    $ppt.Quit()
+    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($ppt) | Out-Null
+  }
+}
+`;
+        const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+        execFile(
+          'powershell.exe',
+          ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
+          { windowsHide: true, timeout: 60000 },
+          (err) => (err ? reject(err) : resolve())
+        );
+      });
+      if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
+        return {
+          outputPath,
+          filename: `${baseName}.pdf`,
+          size: fs.statSync(outputPath).size,
+        };
+      }
+    } catch (e) {
+      console.warn('MS PowerPoint COM conversion failed:', e.message);
+    }
+  }
+
+  // If neither LibreOffice nor PowerPoint is installed, provide clean 400 error
+  const err = new Error(
+    'PowerPoint conversion requires LibreOffice or Microsoft PowerPoint to be installed on the server.'
   );
+  err.status = 400;
+  throw err;
 }
 
 /**

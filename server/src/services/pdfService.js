@@ -131,14 +131,26 @@ async function organizePdf(file, options = {}) {
   const srcDoc = await PDFDocument.load(fileBytes, { ignoreEncryption: true });
   const totalPages = srcDoc.getPageCount();
 
-  let order = [];
-  if (Array.isArray(pageOrder) && pageOrder.length > 0) {
-    order = pageOrder.map((n) => parseInt(n, 10) - 1); // convert to 0-based
-  } else {
-    order = srcDoc.getPageIndices();
-  }
+  const toNumberArray = (val) => {
+    if (Array.isArray(val)) {
+      return val.map((n) => parseInt(n, 10)).filter((n) => !Number.isNaN(n));
+    }
+    if (typeof val === 'string' && val.trim() !== '') {
+      return val
+        .split(',')
+        .map((n) => parseInt(n.trim(), 10))
+        .filter((n) => !Number.isNaN(n));
+    }
+    return [];
+  };
 
-  const deletedSet = new Set((deletedPages || []).map((n) => parseInt(n, 10) - 1));
+  const parsedOrder = toNumberArray(pageOrder);
+  const order = parsedOrder.length > 0
+    ? parsedOrder.map((n) => n - 1) // convert to 0-based
+    : srcDoc.getPageIndices();
+
+  const parsedDeleted = toNumberArray(deletedPages);
+  const deletedSet = new Set(parsedDeleted.map((n) => n - 1));
   const finalIndices = order.filter((idx) => !deletedSet.has(idx) && idx >= 0 && idx < totalPages);
 
   if (finalIndices.length === 0) {
@@ -493,7 +505,9 @@ async function extractText(file) {
         pageTexts.push(content.items.map((item) => item.str).join(' '));
       }
       text = pageTexts.join('\n\n');
+      delete globalThis.pdfjsWorker;
     } catch (fallbackErr) {
+      delete globalThis.pdfjsWorker;
       throw new AppError('Unable to extract text from this PDF document.', 400);
     }
   }

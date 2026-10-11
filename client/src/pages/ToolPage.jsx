@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useParams, Link, Navigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { ChevronDown, ChevronUp, ArrowLeft } from 'lucide-react';
@@ -9,6 +9,16 @@ import ProgressIndicator from '../components/ProgressIndicator';
 import ResultPanel from '../components/ResultPanel';
 import ErrorMessage from '../components/ErrorMessage';
 import ToolCard from '../components/ToolCard';
+
+function getDefaultOptions(tool) {
+  if (!tool?.options) return {};
+  return tool.options.reduce((acc, opt) => {
+    if (opt.defaultValue !== undefined) {
+      acc[opt.id] = opt.defaultValue;
+    }
+    return acc;
+  }, {});
+}
 
 /* ── Option renderer ─────────────────────────────────────── */
 function OptionField({ opt, value, onChange }) {
@@ -77,11 +87,20 @@ export default function ToolPage() {
   const tool = TOOL_MAP[toolId];
 
   const [files, setFiles] = useState([]);
-  const [optValues, setOptValues] = useState({});
+  const [optValues, setOptValues] = useState(() => getDefaultOptions(tool));
   const [status, setStatus] = useState('idle'); // idle | uploading | processing | done | error
   const [progress, setProgress] = useState(null);
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    setFiles([]);
+    setOptValues(getDefaultOptions(TOOL_MAP[toolId]));
+    setResult(null);
+    setError('');
+    setStatus('idle');
+    setProgress(null);
+  }, [toolId]);
 
   if (!tool) return <Navigate to="/404" replace />;
 
@@ -132,7 +151,7 @@ export default function ToolPage() {
 
   const handleReset = () => {
     setFiles([]);
-    setOptValues({});
+    setOptValues(getDefaultOptions(tool));
     setResult(null);
     setError('');
     setStatus('idle');
