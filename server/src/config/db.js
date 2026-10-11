@@ -11,11 +11,13 @@ async function connectDB() {
 
   try {
     mongoose.set('strictQuery', false);
+    const hasExplicitDbName = /^mongodb(\+srv)?:\/\/[^/]+\/[^?]+/.test(env.MONGO_URI.trim());
     await mongoose.connect(env.MONGO_URI, {
       serverSelectionTimeoutMS: env.NODE_ENV === 'production' ? 10000 : 4000,
+      ...(hasExplicitDbName ? {} : { dbName: 'convertx' }),
     });
     isConnected = true;
-    console.log('[Database] Successfully connected to MongoDB.');
+    console.log(`[Database] Successfully connected to MongoDB (db: ${mongoose.connection.name}).`);
     return true;
   } catch (error) {
     console.warn(`[Database] MongoDB connection failed: ${error.message}. Running in fallback anonymous mode.`);
