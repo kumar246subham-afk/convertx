@@ -3,6 +3,7 @@ services:
   - type: web
     name: convertx-server
     runtime: docker
+    plan: free
     rootDir: server
     dockerfilePath: ./Dockerfile
     healthCheckPath: /api/v1/health
