@@ -13,6 +13,9 @@ const authRoutes = require('./routes/authRoutes');
 
 const app = express();
 
+// Trust first proxy (required for express-rate-limit behind Render / cloud reverse proxies)
+app.set('trust proxy', 1);
+
 // Security middleware
 app.use(
   helmet({
@@ -21,27 +24,44 @@ app.use(
 );
 
 // CORS configuration
+const normalizeOrigin = (url) => (url ? url.trim().replace(/\/+$/, '') : '');
+
 const allowedOrigins = [
-  env.CLIENT_ORIGIN,
+  ...(env.CLIENT_ORIGIN ? env.CLIENT_ORIGIN.split(',').map(normalizeOrigin).filter(Boolean) : []),
   'http://localhost:5173',
   'http://127.0.0.1:5173',
+  'http://localhost:5174',
+  'http://127.0.0.1:5174',
   'http://localhost:3000',
+  'http://127.0.0.1:3000',
 ];
 
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      // Allow requests with no origin (like mobile apps, curl, or same-origin)
-      if (!origin || allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-      return callback(null, true); // Permissive in dev to prevent friction
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-  })
-);
+const localhostOriginRegex = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like curl, server-to-server, or same-origin)
+    if (!origin) {
+      return callback(null, true);
+    }
+    const cleanOrigin = normalizeOrigin(origin);
+    if (allowedOrigins.includes(cleanOrigin)) {
+      return callback(null, true);
+    }
+    // In development mode, allow any localhost / 127.0.0.1 port (e.g. Vite on 5174, 5175, etc.)
+    if (env.NODE_ENV !== 'production' && localhostOriginRegex.test(cleanOrigin)) {
+      return callback(null, true);
+    }
+    return callback(null, false);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  optionsSuccessStatus: 204,
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 // Body parsers
 app.use(express.json({ limit: '10mb' }));

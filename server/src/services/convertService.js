@@ -8,10 +8,36 @@ const xlsx = require('xlsx');
 const mammoth = require('mammoth');
 const archiver = require('archiver');
 const { v4: uuidv4 } = require('uuid');
+const { convertDocxToPdf } = require('docx-to-pdf-lite');
 const env = require('../config/env');
 const { ensureDir } = require('../utils/helpers');
 
 ensureDir(env.PROCESSED_DIR);
+
+/**
+ * Detect Microsoft Word COM automation on Windows
+ */
+let cachedWordAvailable = null;
+function detectMsWord() {
+  if (process.platform !== 'win32') return false;
+  if (cachedWordAvailable !== null) return cachedWordAvailable;
+  try {
+    const { execSync } = require('child_process');
+    const checkScript =
+      '$w = $null; try { $w = New-Object -ComObject Word.Application; $v = $w.Version; Write-Host $v } finally { if ($w -ne $null) { $w.Quit(); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($w) | Out-Null } }';
+    const encoded = Buffer.from(checkScript, 'utf16le').toString('base64');
+    const out = execSync(`powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}`, {
+      timeout: 5000,
+      encoding: 'utf8',
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    cachedWordAvailable = Boolean(out && out.trim());
+  } catch (e) {
+    cachedWordAvailable = false;
+  }
+  return cachedWordAvailable;
+}
 
 /**
  * Locate LibreOffice executable if installed
@@ -26,7 +52,6 @@ function findLibreOfficePath() {
 
   for (const p of commonPaths) {
     if (p === 'soffice' || p === 'libreoffice') {
-      // Will test via PATH later
       continue;
     }
     if (fs.existsSync(p)) {
@@ -299,6 +324,54 @@ async function excelToPdf(file) {
 }
 
 /**
+ * Execute Microsoft Word COM conversion on Windows
+ */
+function convertWithMsWord(inputPath, outputPath) {
+  if (process.platform !== 'win32') {
+    return Promise.reject(new Error('Microsoft Word COM automation is only available on Windows.'));
+  }
+
+  return new Promise((resolve, reject) => {
+    const psScript = `
+$ErrorActionPreference = 'Stop'
+$word = $null
+$document = $null
+try {
+  $word = New-Object -ComObject Word.Application
+  $word.Visible = $false
+  $word.DisplayAlerts = 0
+  $document = $word.Documents.Open('${inputPath.replace(/'/g, "''")}', $false, $true)
+  $document.ExportAsFixedFormat('${outputPath.replace(/'/g, "''")}', 17)
+}
+finally {
+  if ($document -ne $null) {
+    $document.Close($false)
+    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($document) | Out-Null
+  }
+  if ($word -ne $null) {
+    $word.Quit()
+    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null
+  }
+  [GC]::Collect()
+  [GC]::WaitForPendingFinalizers()
+}
+`;
+    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
+      { windowsHide: true, timeout: 60000 },
+      (error, stdout, stderr) => {
+        if (error) {
+          return reject(new Error(`Microsoft Word conversion failed: ${error.message} (stderr: ${stderr})`));
+        }
+        resolve();
+      }
+    );
+  });
+}
+
+/**
  * Execute LibreOffice headless conversion
  */
 function convertWithLibreOffice(inputPath, outputDir) {
@@ -321,29 +394,41 @@ function convertWithLibreOffice(inputPath, outputDir) {
 }
 
 /**
- * Convert Word (DOCX) document to styled PDF
+ * Sanitize text for standard PDF WinAnsi font encoding (Helvetica, Times, Courier)
+ * Replaces tab characters, Word symbol bullets (e.g. 0xF0AE), smart quotes, and unencodable chars.
  */
-async function wordToPdf(file) {
-  // Option 1: Native LibreOffice conversion if installed
-  if (cachedLibreOfficePath) {
-    try {
-      const outDir = env.PROCESSED_DIR;
-      await convertWithLibreOffice(file.path, outDir);
-      const generatedPdfName = `${path.basename(file.path, path.extname(file.path))}.pdf`;
-      const generatedPdfPath = path.join(outDir, generatedPdfName);
-      if (fs.existsSync(generatedPdfPath)) {
-        return {
-          outputPath: generatedPdfPath,
-          filename: `${path.basename(file.originalname, path.extname(file.originalname))}.pdf`,
-          size: fs.statSync(generatedPdfPath).size,
-        };
-      }
-    } catch (e) {
-      console.warn('LibreOffice conversion attempt failed, falling back to built-in converter:', e.message);
+function sanitizeForWinAnsi(str) {
+  if (!str) return '';
+  // 1. Expand tab characters
+  let text = str.replace(/\t/g, '    ');
+  // 2. Word private-use symbol bullets (e.g. Wingdings/Symbol 0xF000 - 0xF0FF including 0xF0AE)
+  text = text.replace(/[\uF000-\uF0FF]/g, '- ');
+  // 3. Smart punctuation & typographic symbols
+  text = text
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2013\u2014]/g, '-')
+    .replace(/\u2026/g, '...')
+    .replace(/\u2022/g, '* ')
+    .replace(/\u00A0/g, ' ');
+
+  // 4. Filter characters strictly against valid WinAnsi range (Windows-1252)
+  let result = '';
+  for (const ch of text) {
+    const code = ch.charCodeAt(0);
+    if (code === 10 || code === 13 || (code >= 32 && code <= 126) || (code >= 160 && code <= 255)) {
+      result += ch;
+    } else {
+      result += '?';
     }
   }
+  return result;
+}
 
-  // Option 2: High-fidelity structured parsing using Mammoth + pdf-lib
+/**
+ * Fallback converter using Mammoth text extraction and pdf-lib with WinAnsi sanitization
+ */
+async function convertWithMammothPdfLib(file, outputPath) {
   const result = await mammoth.extractRawText({ path: file.path });
   const rawText = result.value || '';
 
@@ -363,7 +448,8 @@ async function wordToPdf(file) {
   let currentY = pageHeight - margin;
 
   // Document Title Header
-  currentPage.drawText(path.basename(file.originalname, path.extname(file.originalname)), {
+  const docTitle = sanitizeForWinAnsi(path.basename(file.originalname, path.extname(file.originalname)));
+  currentPage.drawText(docTitle, {
     x: margin,
     y: currentY - 18,
     size: 16,
@@ -373,13 +459,13 @@ async function wordToPdf(file) {
   currentY -= 40;
 
   for (const rawLine of lines) {
-    const trimmed = rawLine.trim();
+    const cleanLine = sanitizeForWinAnsi(rawLine);
+    const trimmed = cleanLine.trim();
     if (!trimmed) {
       currentY -= lineHeight * 0.75;
       continue;
     }
 
-    // Word wrap line to fit maxWidth
     const words = trimmed.split(' ');
     let currentLineText = '';
 
@@ -390,7 +476,6 @@ async function wordToPdf(file) {
       if (textWidth < maxWidth) {
         currentLineText = candidate;
       } else {
-        // Render full line
         if (currentY - lineHeight < margin) {
           currentPage = pdfDoc.addPage([pageWidth, pageHeight]);
           currentY = pageHeight - margin - 20;
@@ -426,14 +511,107 @@ async function wordToPdf(file) {
   }
 
   const pdfBytes = await pdfDoc.save();
-  const outputPath = path.join(env.PROCESSED_DIR, `word-to-pdf-${uuidv4()}.pdf`);
   fs.writeFileSync(outputPath, pdfBytes);
+}
+
+/**
+ * Convert Word (DOCX / DOC) document to styled PDF
+ * Uses a resilient multi-tier engine:
+ * 1. docx-to-pdf-lite (tries Word on Windows, LibreOffice, then PlutoPrint/docx-preview in pure Node.js)
+ * 2. Direct MS Word COM automation (native Word on Windows)
+ * 3. LibreOffice headless conversion
+ * 4. Mammoth text extraction + WinAnsi-safe pdf-lib rendering
+ */
+async function wordToPdf(file) {
+  if (!file || !file.path) {
+    throw new Error('Please upload a valid Word document.');
+  }
+
+  const ext = path.extname(file.originalname || file.path).toLowerCase();
+  const baseName = path.basename(file.originalname || 'document', ext);
+  const outputPdfName = `word-to-pdf-${uuidv4()}.pdf`;
+  const outputPath = path.join(env.PROCESSED_DIR, outputPdfName);
+
+  let converted = false;
+  let lastError = null;
+
+  // Engine 1: For .docx files, use docx-to-pdf-lite (which handles MS Word, LibreOffice, and pure-JS PlutoPrint)
+  if (ext === '.docx') {
+    try {
+      await convertDocxToPdf(file.path, outputPath, { format: 'A4' });
+      if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
+        converted = true;
+      }
+    } catch (err) {
+      console.warn('[wordToPdf] docx-to-pdf-lite attempt failed:', err.message);
+      lastError = err;
+    }
+  }
+
+  // Engine 2: For Windows environments or .doc files, try direct Word COM
+  if (!converted && process.platform === 'win32') {
+    try {
+      await convertWithMsWord(file.path, outputPath);
+      if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
+        converted = true;
+      }
+    } catch (err) {
+      console.warn('[wordToPdf] Direct MS Word COM attempt failed:', err.message);
+      lastError = err;
+    }
+  }
+
+  // Engine 3: Try LibreOffice if available
+  if (!converted && cachedLibreOfficePath) {
+    try {
+      const outDir = env.PROCESSED_DIR;
+      await convertWithLibreOffice(file.path, outDir);
+      const generatedPdfName = `${path.basename(file.path, path.extname(file.path))}.pdf`;
+      const generatedPdfPath = path.join(outDir, generatedPdfName);
+      if (fs.existsSync(generatedPdfPath)) {
+        fs.renameSync(generatedPdfPath, outputPath);
+        converted = true;
+      }
+    } catch (err) {
+      console.warn('[wordToPdf] LibreOffice attempt failed:', err.message);
+      lastError = err;
+    }
+  }
+
+  // Engine 4: Fallback to Mammoth + WinAnsi-safe pdf-lib rendering
+  if (!converted) {
+    try {
+      await convertWithMammothPdfLib(file, outputPath);
+      if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
+        converted = true;
+      }
+    } catch (err) {
+      console.error('[wordToPdf] Fallback parser failed:', err.message);
+      throw new Error(
+        `Failed to convert Word document to PDF: ${lastError ? lastError.message : err.message}`
+      );
+    }
+  }
+
+  if (!converted || !fs.existsSync(outputPath)) {
+    throw new Error('Failed to generate PDF from the uploaded Word document.');
+  }
+
+  // Determine page count
+  let pageCount = 1;
+  try {
+    const pdfBytes = fs.readFileSync(outputPath);
+    const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
+    pageCount = pdfDoc.getPageCount();
+  } catch (e) {
+    // Non-fatal if page count inspection fails
+  }
 
   return {
     outputPath,
-    filename: `${path.basename(file.originalname, path.extname(file.originalname))}.pdf`,
-    pageCount: pdfDoc.getPageCount(),
-    size: pdfBytes.length,
+    filename: `${baseName}.pdf`,
+    pageCount,
+    size: fs.statSync(outputPath).size,
   };
 }
 
@@ -466,12 +644,13 @@ async function powerpointToPdf(file) {
 }
 
 /**
- * Check system utilities status (LibreOffice, etc.)
+ * Check system utilities status (Word, LibreOffice, etc.)
  */
 function getSystemStatus() {
   return {
     libreOfficeInstalled: Boolean(cachedLibreOfficePath),
     libreOfficePath: cachedLibreOfficePath,
+    wordInstalled: detectMsWord(),
     nodeVersion: process.version,
     platform: process.platform,
     arch: process.arch,

@@ -40,6 +40,32 @@ describe('ConvertX Backend API Test Suite', () => {
       assert.ok(Array.isArray(res.body.tools));
       assert.ok(res.body.tools.length >= 15);
     });
+
+    it('OPTIONS /api/v1/auth/login allows CORS preflight for localhost:5174 and 127.0.0.1:5174', async () => {
+      for (const origin of ['http://localhost:5174', 'http://127.0.0.1:5174']) {
+        const res = await request(app)
+          .options('/api/v1/auth/login')
+          .set('Origin', origin)
+          .set('Access-Control-Request-Method', 'POST')
+          .set('Access-Control-Request-Headers', 'content-type,authorization');
+
+        assert.strictEqual(res.status, 204);
+        assert.strictEqual(res.headers['access-control-allow-origin'], origin);
+      }
+    });
+
+    it('POST /api/v1/auth/login responds with proper CORS headers and validation from port 5174', async () => {
+      for (const origin of ['http://localhost:5174', 'http://127.0.0.1:5174']) {
+        const res = await request(app)
+          .post('/api/v1/auth/login')
+          .set('Origin', origin)
+          .send({});
+
+        assert.strictEqual(res.headers['access-control-allow-origin'], origin);
+        assert.ok([400, 503].includes(res.status));
+        assert.strictEqual(res.body.success, false);
+      }
+    });
   });
 
   describe('PDF Operations', () => {
@@ -141,6 +167,33 @@ describe('ConvertX Backend API Test Suite', () => {
       assert.strictEqual(res.status, 200);
       assert.strictEqual(res.body.success, true);
       assert.ok(res.body.data.downloadId);
+    });
+  });
+
+  describe('Document Conversions', () => {
+    it('POST /api/v1/convert/word-to-pdf converts DOCX with unicode and tables successfully', async () => {
+      const fs = require('fs');
+      const path = require('path');
+      const fixturePath = path.resolve(__dirname, 'fixtures/test-sample.docx');
+      assert.ok(fs.existsSync(fixturePath), 'test fixture exists');
+      const buffer = fs.readFileSync(fixturePath);
+
+      const res = await request(app)
+        .post('/api/v1/convert/word-to-pdf')
+        .attach('file', buffer, 'test-sample.docx');
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.success, true);
+      assert.ok(res.body.data.downloadId);
+      assert.ok(res.body.data.size > 0);
+      assert.ok(res.body.data.pageCount >= 1);
+      assert.match(res.body.data.filename, /\.pdf$/i);
+    });
+
+    it('POST /api/v1/convert/word-to-pdf rejects request without file', async () => {
+      const res = await request(app).post('/api/v1/convert/word-to-pdf');
+      assert.strictEqual(res.status, 400);
+      assert.strictEqual(res.body.success, false);
     });
   });
 
