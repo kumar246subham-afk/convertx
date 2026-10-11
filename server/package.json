@@ -4,6 +4,7 @@
   "description": "ConvertX PDF Tools Backend API",
   "main": "src/server.js",
   "scripts": {
+    "build": "node -e \"console.log('Backend build complete (CommonJS runtime)')\"",
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "test": "node --test test/**/*.test.js"
