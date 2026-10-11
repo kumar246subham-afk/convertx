@@ -12,7 +12,7 @@ async function connectDB() {
   try {
     mongoose.set('strictQuery', false);
     await mongoose.connect(env.MONGO_URI, {
-      serverSelectionTimeoutMS: 4000,
+      serverSelectionTimeoutMS: env.NODE_ENV === 'production' ? 10000 : 4000,
     });
     isConnected = true;
     console.log('[Database] Successfully connected to MongoDB.');

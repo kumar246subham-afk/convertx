@@ -29,8 +29,23 @@ app.use(
 // CORS configuration
 const normalizeOrigin = (url) => (url ? url.trim().replace(/\/+$/, '') : '');
 
+const expandConfiguredOrigins = (raw) => {
+  if (!raw) return [];
+  const origins = [];
+  for (const part of raw.split(',')) {
+    const clean = normalizeOrigin(part);
+    if (!clean) continue;
+    origins.push(clean);
+    if (!/^https?:\/\//i.test(clean)) {
+      origins.push(`https://${clean}`);
+      origins.push(`http://${clean}`);
+    }
+  }
+  return origins;
+};
+
 const allowedOrigins = [
-  ...(env.CLIENT_ORIGIN ? env.CLIENT_ORIGIN.split(',').map(normalizeOrigin).filter(Boolean) : []),
+  ...expandConfiguredOrigins(env.CLIENT_ORIGIN),
   'http://localhost:5173',
   'http://127.0.0.1:5173',
   'http://localhost:5174',

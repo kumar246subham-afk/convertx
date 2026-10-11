@@ -1,9 +1,12 @@
 import axios from 'axios';
 
 function resolveBaseUrl() {
-  const raw = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api/v1')
+  let raw = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api/v1')
     .trim()
     .replace(/\/+$/, '');
+  if (raw && !/^https?:\/\//i.test(raw)) {
+    raw = `https://${raw}`;
+  }
   return raw.endsWith('/api/v1') ? raw : `${raw}/api/v1`;
 }
 

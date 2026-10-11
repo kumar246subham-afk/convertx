@@ -20,7 +20,10 @@ services:
       - key: MONGO_URI
         sync: false
       - key: CLIENT_ORIGIN
-        sync: false
+        fromService:
+          type: web
+          name: convertx-client
+          property: host
 
   # Frontend Static Site
   - type: web
@@ -31,7 +34,10 @@ services:
     staticPublishPath: dist
     envVars:
       - key: VITE_API_BASE_URL
-        sync: false
+        fromService:
+          type: web
+          name: convertx-server
+          property: host
     routes:
       - type: rewrite
         source: /*
