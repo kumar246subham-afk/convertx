@@ -1,8 +1,9 @@
-const { getDBStatus } = require('../config/db');
+const { getDBStatus, ensureDBConnected } = require('../config/db');
 const { getSystemStatus } = require('../services/convertService');
 const env = require('../config/env');
 
-function getHealth(req, res) {
+async function getHealth(req, res) {
+  await ensureDBConnected();
   const dbStatus = getDBStatus();
   const sysStatus = getSystemStatus();
 
@@ -14,6 +15,9 @@ function getHealth(req, res) {
     database: {
       configured: dbStatus.configured,
       connected: dbStatus.connected,
+      ...(dbStatus.dbName ? { dbName: dbStatus.dbName } : {}),
+      ...(dbStatus.errorCategory ? { errorCategory: dbStatus.errorCategory } : {}),
+      ...(dbStatus.errorHint ? { errorHint: dbStatus.errorHint } : {}),
     },
     system: {
       libreOfficeAvailable: sysStatus.libreOfficeInstalled,
@@ -228,7 +232,8 @@ function getTools(req, res) {
   });
 }
 
-function getDetailedStatus(req, res) {
+async function getDetailedStatus(req, res) {
+  await ensureDBConnected();
   res.json({
     success: true,
     data: {

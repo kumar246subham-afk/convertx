@@ -1,18 +1,22 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const env = require('../config/env');
-const { getDBStatus } = require('../config/db');
+const { getDBStatus, ensureDBConnected } = require('../config/db');
 const User = require('../models/User');
 const JobHistory = require('../models/JobHistory');
 
-function isMongoAvailable() {
-  const status = getDBStatus();
+async function isMongoAvailable() {
+  let status = getDBStatus();
+  if (status.configured && !status.connected) {
+    await ensureDBConnected();
+    status = getDBStatus();
+  }
   return status.connected;
 }
 
 async function register(req, res, next) {
   try {
-    if (!isMongoAvailable()) {
+    if (!(await isMongoAvailable())) {
       return res.status(503).json({
         success: false,
         error: 'User accounts are currently disabled because MongoDB is not connected. All PDF tools remain 100% free and functional anonymously!',
@@ -62,7 +66,7 @@ async function register(req, res, next) {
 
 async function login(req, res, next) {
   try {
-    if (!isMongoAvailable()) {
+    if (!(await isMongoAvailable())) {
       return res.status(503).json({
         success: false,
         error: 'User authentication requires MongoDB. You can use all PDF tools anonymously without logging in.',
@@ -104,7 +108,7 @@ async function login(req, res, next) {
 
 async function getMe(req, res, next) {
   try {
-    if (!isMongoAvailable()) {
+    if (!(await isMongoAvailable())) {
       return res.status(503).json({ success: false, error: 'Database offline.' });
     }
 
@@ -124,7 +128,7 @@ async function getMe(req, res, next) {
 
 async function getHistory(req, res, next) {
   try {
-    if (!isMongoAvailable()) {
+    if (!(await isMongoAvailable())) {
       return res.json({ success: true, data: [] });
     }
 

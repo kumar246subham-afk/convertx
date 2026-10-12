@@ -463,7 +463,14 @@ describe('ConvertX Backend API Test Suite', () => {
 
       await connectDB();
       if (!getDBStatus().connected) {
-        return; // Skip DB-dependent auth lifecycle only if MongoDB is not running
+        const healthDisconnectedRes = await request(app).get('/api/v1/health');
+        assert.strictEqual(healthDisconnectedRes.status, 200);
+        assert.strictEqual(healthDisconnectedRes.body.database.connected, false);
+        if (healthDisconnectedRes.body.database.configured) {
+          assert.ok(healthDisconnectedRes.body.database.errorCategory);
+          assert.ok(healthDisconnectedRes.body.database.errorHint);
+        }
+        return; // Skip DB-dependent auth lifecycle only if MongoDB is unreachable
       }
 
       const testEmail = `qa-audit-${Date.now()}@convertx.local`;
@@ -510,6 +517,12 @@ describe('ConvertX Backend API Test Suite', () => {
         assert.strictEqual(histRes.status, 200);
         assert.ok(Array.isArray(histRes.body.data));
         assert.ok(histRes.body.data.some((h) => h.originalFilename === 'history-check.pdf'));
+
+        // 6. Verify /api/v1/health reports connected=true while DB is connected
+        const healthConnectedRes = await request(app).get('/api/v1/health');
+        assert.strictEqual(healthConnectedRes.status, 200);
+        assert.strictEqual(healthConnectedRes.body.database.configured, true);
+        assert.strictEqual(healthConnectedRes.body.database.connected, true);
       } finally {
         const mongoose = require('mongoose');
         const user = await User.findOne({ email: testEmail });
@@ -521,6 +534,64 @@ describe('ConvertX Backend API Test Suite', () => {
           await mongoose.disconnect();
         }
       }
+    });
+
+    it('Normalizes MONGO_URI prefixes/quotes/special characters and classifies connection errors without leaking secrets', () => {
+      const { normalizeMongoUri, classifyMongoError } = require('../src/config/db');
+
+      // Strips accidental MONGO_URI= prefix and quotes, and URL-encodes special password chars
+      const normalized = normalizeMongoUri(
+        '  "MONGO_URI=mongodb+srv://app_user:p@ss:w#rd/123@cluster0.example.mongodb.net/convertx?retryWrites=true"  '
+      );
+      assert.strictEqual(
+        normalized,
+        'mongodb+srv://app_user:p%40ss%3Aw%23rd%2F123@cluster0.example.mongodb.net/convertx?retryWrites=true'
+      );
+
+      // Classifies missing URI
+      assert.strictEqual(classifyMongoError(new Error(''), '').category, 'MISSING_URI');
+
+      // Classifies unreplaced <db_password> placeholder
+      assert.strictEqual(
+        classifyMongoError(
+          new Error('bad auth'),
+          'mongodb+srv://user:<db_password>@cluster0.example.mongodb.net/convertx'
+        ).category,
+        'PLACEHOLDER_CREDENTIALS'
+      );
+
+      // Classifies invalid scheme
+      assert.strictEqual(
+        classifyMongoError(new Error('Invalid scheme'), 'http://not-mongo-uri').category,
+        'INVALID_URI_FORMAT'
+      );
+
+      // Classifies authentication error
+      const authDiag = classifyMongoError(
+        { name: 'MongoServerError', code: 8000, message: 'bad auth : authentication failed' },
+        'mongodb+srv://user:wrong@cluster0.example.mongodb.net/convertx'
+      );
+      assert.strictEqual(authDiag.category, 'AUTH_FAILED');
+      assert.ok(!authDiag.hint.includes('wrong'));
+
+      // Classifies Atlas IP allowlist / server selection error
+      const netDiag = classifyMongoError(
+        {
+          name: 'MongooseServerSelectionError',
+          message:
+            "Could not connect to any servers in your MongoDB Atlas cluster. One common reason is that you're trying to access the database from an IP that isn't whitelisted.",
+        },
+        'mongodb+srv://user:secret@cluster0.example.mongodb.net/convertx'
+      );
+      assert.strictEqual(netDiag.category, 'NETWORK_OR_IP_ALLOWLIST');
+      assert.ok(!netDiag.hint.includes('secret'));
+
+      // Classifies DNS SRV failure
+      const dnsDiag = classifyMongoError(
+        { name: 'Error', code: 'ENOTFOUND', message: 'querySrv ENOTFOUND _mongodb._tcp.invalid.mongodb.net' },
+        'mongodb+srv://user:secret@invalid.mongodb.net/convertx'
+      );
+      assert.strictEqual(dnsDiag.category, 'DNS_LOOKUP_FAILED');
     });
   });
 });
