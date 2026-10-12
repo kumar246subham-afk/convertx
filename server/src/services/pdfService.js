@@ -495,6 +495,7 @@ async function extractText(file) {
     numpages = data.numpages || 1;
   } catch (parseErr) {
     try {
+      globalThis.pdfjsWorker = require('pdfjs-dist/legacy/build/pdf.worker.js');
       const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
       const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(fileBytes) }).promise;
       numpages = pdf.numPages;
