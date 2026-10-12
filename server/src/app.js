@@ -46,6 +46,8 @@ const expandConfiguredOrigins = (raw) => {
 
 const allowedOrigins = [
   ...expandConfiguredOrigins(env.CLIENT_ORIGIN),
+  'https://convertx-client.onrender.com',
+  'https://convertx.onrender.com',
   'http://localhost:5173',
   'http://127.0.0.1:5173',
   'http://localhost:5174',
@@ -55,6 +57,7 @@ const allowedOrigins = [
 ];
 
 const localhostOriginRegex = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
+const renderFrontendOriginRegex = /^https:\/\/convertx(-client)?(-[a-z0-9]+)?\.onrender\.com$/i;
 
 const corsOptions = {
   origin: (origin, callback) => {
@@ -63,7 +66,7 @@ const corsOptions = {
       return callback(null, true);
     }
     const cleanOrigin = normalizeOrigin(origin);
-    if (allowedOrigins.includes(cleanOrigin)) {
+    if (allowedOrigins.includes(cleanOrigin) || renderFrontendOriginRegex.test(cleanOrigin)) {
       return callback(null, true);
     }
     // In development mode, allow any localhost / 127.0.0.1 port (e.g. Vite on 5174, 5175, etc.)
