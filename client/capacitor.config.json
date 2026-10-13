@@ -1,0 +1,15 @@
+{
+  "appId": "com.convertx.app",
+  "appName": "ConvertX",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "StatusBar": {
+      "style": "DARK",
+      "backgroundColor": "#0B0B0F",
+      "overlaysWebView": false
+    }
+  }
+}

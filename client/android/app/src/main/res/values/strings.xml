@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">ConvertX</string>
+    <string name="title_activity_main">ConvertX</string>
+    <string name="package_name">com.convertx.app</string>
+    <string name="custom_url_scheme">com.convertx.app</string>
+</resources>

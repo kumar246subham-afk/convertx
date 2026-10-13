@@ -1,8 +1,15 @@
+import { useState, useEffect } from 'react';
 import { Loader2 } from 'lucide-react';
 
 export default function ProgressIndicator({ progress, label = 'Processing your document…' }) {
+  const [slowNotice, setSlowNotice] = useState(false);
   const pct = Math.round(Math.max(0, Math.min(100, progress ?? 0)));
   const isIndeterminate = progress == null;
+
+  useEffect(() => {
+    const timer = setTimeout(() => setSlowNotice(true), 7000);
+    return () => clearTimeout(timer);
+  }, []);
 
   return (
     <div className="flex flex-col items-center gap-4 py-8">
@@ -28,10 +35,16 @@ export default function ProgressIndicator({ progress, label = 'Processing your d
           </span>
         </div>
       )}
-      <div className="text-center">
+      <div className="text-center max-w-md px-2">
         <p className="font-semibold text-white">{label}</p>
-        <p className="text-sm text-slate-400 mt-1">Please wait, do not close or refresh this page</p>
+        <p className="text-sm text-slate-400 mt-1">Please wait, do not close or refresh this screen</p>
+        {slowNotice && (
+          <p className="text-xs text-brand-300 mt-2.5 bg-brand-950/50 border border-brand-800/60 rounded-xl px-3.5 py-2 leading-relaxed">
+            Waking up cloud conversion server — the first request after inactivity can take 20–40 seconds.
+          </p>
+        )}
       </div>
     </div>
   );
 }
+

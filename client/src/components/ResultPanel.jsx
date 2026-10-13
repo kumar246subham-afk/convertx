@@ -1,15 +1,51 @@
-import { CheckCircle, Download, RefreshCw, LayoutGrid, FileText } from 'lucide-react';
+import { useState } from 'react';
+import { CheckCircle, Download, RefreshCw, LayoutGrid, FileText, Share2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import toast from 'react-hot-toast';
 import { getDownloadUrl } from '../services/api';
 import { formatBytes } from '../utils/format';
 
 export default function ResultPanel({ result, tool, onReset }) {
+  const [sharing, setSharing] = useState(false);
+
   if (!result) return null;
 
   const { downloadId, filename, size, sizeFormatted, originalSize, compressedSize, reductionPercent,
     pageCount, isZip, text, numpages } = result;
 
   const isTextResult = tool?.id === 'pdf-to-text' && text !== undefined;
+  const canWebShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+
+  const handleShare = async () => {
+    if (!downloadId || !canWebShare) return;
+    setSharing(true);
+    try {
+      const url = getDownloadUrl(downloadId);
+      const response = await fetch(url);
+      if (!response.ok) throw new Error('Could not retrieve processed file for sharing.');
+      const blob = await response.blob();
+      const file = new File([blob], filename || 'convertx-output.pdf', {
+        type: blob.type || (isZip ? 'application/zip' : 'application/pdf'),
+      });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          title: filename || 'ConvertX Document',
+          files: [file],
+        });
+      } else {
+        await navigator.share({
+          title: filename || 'ConvertX Document',
+          url,
+        });
+      }
+    } catch (err) {
+      if (err?.name !== 'AbortError') {
+        toast.error('Unable to open share menu. Please use the Download button.');
+      }
+    } finally {
+      setSharing(false);
+    }
+  };
 
   return (
     <div className="rounded-2xl border border-[#282B37] bg-[#181A20] overflow-hidden shadow-xl shadow-black/50">
@@ -71,11 +107,23 @@ export default function ResultPanel({ result, tool, onReset }) {
             <a
               href={getDownloadUrl(downloadId)}
               download={filename}
+              onClick={() => toast.success('Starting file download…')}
               className="flex-1 flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-semibold transition-all shadow-md shadow-brand-950/60 active:scale-[0.99]"
             >
               <Download className="w-4 h-4" />
               Download {isZip ? 'ZIP Archive' : 'Processed File'}
             </a>
+          )}
+          {downloadId && canWebShare && (
+            <button
+              type="button"
+              onClick={handleShare}
+              disabled={sharing}
+              className="flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-[#1F222B] border border-[#282B37] hover:border-brand-500/60 text-slate-200 hover:text-white font-medium transition-colors"
+            >
+              <Share2 className="w-4 h-4" />
+              {sharing ? 'Sharing…' : 'Share'}
+            </button>
           )}
           <button
             onClick={onReset}
